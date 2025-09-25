@@ -1,7 +1,10 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 from enum import Enum
+
+# --- Enums para padronizar valores ---
+
 
 class TipoAtivo(str, Enum):
     ACAO = "ACAO"
@@ -9,48 +12,23 @@ class TipoAtivo(str, Enum):
     ETF = "ETF"
     BDR = "BDR"
     INDICE = "INDICE"
+    CRIPTO = "CRIPTO"  # Adicionando CRIPTO
+    MOEDA = "MOEDA"   # Adicionando MOEDA
+
 
 class TipoTransacao(str, Enum):
     COMPRA = "COMPRA"
     VENDA = "VENDA"
+
 
 class TipoDividendo(str, Enum):
     DIVIDENDO = "DIVIDENDO"
     JCP = "JCP"
     BONIFICACAO = "BONIFICACAO"
 
-# Schemas para Ativo
-class AtivoBase(BaseModel):
-    ticker: str = Field(..., max_length=10)
-    nome_curto: str = Field(..., max_length=100)
-    nome_longo: Optional[str] = Field(None, max_length=200)
-    tipo: TipoAtivo
-    setor: Optional[str] = Field(None, max_length=100)
-    subsetor: Optional[str] = Field(None, max_length=100)
-    moeda: str = Field(default="BRL", max_length=3)
-    logo_url: Optional[str] = Field(None, max_length=500)
-    ativo: bool = Field(default=True)
+# --- Schemas para Cotação ---
 
-class AtivoCreate(AtivoBase):
-    pass
 
-class AtivoUpdate(BaseModel):
-    nome_curto: Optional[str] = Field(None, max_length=100)
-    nome_longo: Optional[str] = Field(None, max_length=200)
-    setor: Optional[str] = Field(None, max_length=100)
-    subsetor: Optional[str] = Field(None, max_length=100)
-    logo_url: Optional[str] = Field(None, max_length=500)
-    ativo: Optional[bool] = None
-
-class Ativo(AtivoBase):
-    id: int
-    criado_em: datetime
-    atualizado_em: datetime
-
-    class Config:
-        from_attributes = True
-
-# Schemas para Cotação
 class CotacaoBase(BaseModel):
     data_hora: datetime
     preco_abertura: Optional[float] = None
@@ -62,8 +40,10 @@ class CotacaoBase(BaseModel):
     variacao_percentual: Optional[float] = None
     valor_mercado: Optional[float] = None
 
+
 class CotacaoCreate(CotacaoBase):
     ativo_id: int
+
 
 class Cotacao(CotacaoBase):
     id: int
@@ -73,7 +53,9 @@ class Cotacao(CotacaoBase):
     class Config:
         from_attributes = True
 
-# Schemas para Dividendo
+# --- Schemas para Dividendo ---
+
+
 class DividendoBase(BaseModel):
     tipo: TipoDividendo
     valor: float
@@ -81,8 +63,10 @@ class DividendoBase(BaseModel):
     data_ex: Optional[datetime] = None
     data_pagamento: Optional[datetime] = None
 
+
 class DividendoCreate(DividendoBase):
     ativo_id: int
+
 
 class Dividendo(DividendoBase):
     id: int
@@ -92,42 +76,63 @@ class Dividendo(DividendoBase):
     class Config:
         from_attributes = True
 
-# Schemas para Carteira
-class CarteiraBase(BaseModel):
-    nome: str = Field(..., max_length=100)
-    descricao: Optional[str] = None
-    ativa: bool = Field(default=True)
+# --- Schemas para Ativo ---
 
-class CarteiraCreate(CarteiraBase):
+
+class AtivoBase(BaseModel):
+    ticker: str = Field(..., max_length=10)
+    nome_curto: str = Field(..., max_length=100)
+    nome_longo: Optional[str] = Field(None, max_length=200)
+    tipo: TipoAtivo
+    setor: Optional[str] = Field(None, max_length=100)
+    subsetor: Optional[str] = Field(None, max_length=100)
+    moeda: str = Field(default="BRL", max_length=3)
+    logo_url: Optional[str] = Field(None, max_length=500)
+    ativo: bool = Field(default=True)
+
+
+class AtivoCreate(AtivoBase):
     pass
 
-class CarteiraUpdate(BaseModel):
-    nome: Optional[str] = Field(None, max_length=100)
-    descricao: Optional[str] = None
-    ativa: Optional[bool] = None
 
-class Carteira(CarteiraBase):
+class AtivoUpdate(BaseModel):
+    nome_curto: Optional[str] = Field(None, max_length=100)
+    nome_longo: Optional[str] = Field(None, max_length=200)
+    setor: Optional[str] = Field(None, max_length=100)
+    subsetor: Optional[str] = Field(None, max_length=100)
+    logo_url: Optional[str] = Field(None, max_length=500)
+    ativo: Optional[bool] = None
+
+
+class Ativo(AtivoBase):
     id: int
-    valor_total: float
-    criada_em: datetime
-    atualizada_em: datetime
+    criado_em: datetime
+    atualizado_em: datetime
+
+    cotacoes: List[Cotacao] = []
+    dividendos: List[Dividendo] = []
 
     class Config:
         from_attributes = True
 
-# Schemas para CarteiraAtivo
+# --- Schemas para CarteiraAtivo ---
+
+
 class CarteiraAtivoBase(BaseModel):
     quantidade: float
     preco_medio: float
     valor_investido: float
 
+
 class CarteiraAtivoCreate(CarteiraAtivoBase):
     carteira_id: int
     ativo_id: int
 
+
 class CarteiraAtivoUpdate(BaseModel):
     quantidade: Optional[float] = None
     preco_medio: Optional[float] = None
+
 
 class CarteiraAtivo(CarteiraAtivoBase):
     id: int
@@ -137,12 +142,45 @@ class CarteiraAtivo(CarteiraAtivoBase):
     percentual_carteira: Optional[float] = None
     adicionado_em: datetime
     atualizado_em: datetime
-    ativo: Ativo
+
+    ativo: "Ativo"
 
     class Config:
         from_attributes = True
 
-# Schemas para Transação
+# --- Schemas para Carteira ---
+
+
+class CarteiraBase(BaseModel):
+    nome: str = Field(..., max_length=100)
+    descricao: Optional[str] = None
+    ativa: bool = Field(default=True)
+
+
+class CarteiraCreate(CarteiraBase):
+    pass
+
+
+class CarteiraUpdate(BaseModel):
+    nome: Optional[str] = Field(None, max_length=100)
+    descricao: Optional[str] = None
+    ativa: Optional[bool] = None
+
+
+class Carteira(CarteiraBase):
+    id: int
+    valor_total: float = Field(default=0.0)
+    criada_em: datetime
+    atualizada_em: datetime
+
+    ativos: List[CarteiraAtivo] = []
+
+    class Config:
+        from_attributes = True
+
+# --- Schemas para Transação ---
+
+
 class TransacaoBase(BaseModel):
     tipo: TipoTransacao
     quantidade: float
@@ -152,9 +190,11 @@ class TransacaoBase(BaseModel):
     data_transacao: datetime
     observacoes: Optional[str] = None
 
+
 class TransacaoCreate(TransacaoBase):
     carteira_id: int
     ativo_id: int
+
 
 class Transacao(TransacaoBase):
     id: int
@@ -165,7 +205,9 @@ class Transacao(TransacaoBase):
     class Config:
         from_attributes = True
 
-# Schemas para Indicadores Financeiros
+# --- Schemas para Indicadores Financeiros ---
+
+
 class IndicadorFinanceiroBase(BaseModel):
     data_referencia: datetime
     preco_lucro: Optional[float] = None
@@ -184,8 +226,10 @@ class IndicadorFinanceiroBase(BaseModel):
     dividend_yield_fii: Optional[float] = None
     vacancia: Optional[float] = None
 
+
 class IndicadorFinanceiroCreate(IndicadorFinanceiroBase):
     ativo_id: int
+
 
 class IndicadorFinanceiro(IndicadorFinanceiroBase):
     id: int
@@ -195,28 +239,107 @@ class IndicadorFinanceiro(IndicadorFinanceiroBase):
     class Config:
         from_attributes = True
 
-# Schemas para respostas da API
+# -------------------------------------------------------------
+# --- NOVOS SCHEMAS PARA AS ROTAS DE ANÁLISE (ADICIONADOS AQUI) ---
+# -------------------------------------------------------------
+
+# Schema para o endpoint de análise de um único ativo
+
+
+class AnalisePerformance(BaseModel):
+    preco_atual: float
+    preco_minimo: float
+    preco_maximo: float
+    retorno_total: float
+    retorno_anualizado: float
+    volatilidade: float
+    sharpe_ratio: float
+    max_drawdown: float
+    dividend_yield: Optional[float] = None
+
+
+class AnaliseEstatisticas(BaseModel):
+    numero_observacoes: int
+    volume_medio: float
+    numero_dividendos: Optional[int] = None
+
+
+class AnaliseAtivoResponse(BaseModel):
+    ticker: str
+    nome: str
+    periodo_analise: int
+    performance: AnalisePerformance
+    estatisticas: AnaliseEstatisticas
+
+# Schemas para o endpoint de comparação de ativos
+
+
+class CompararAtivosRequest(BaseModel):
+    tickers: List[str]
+    periodo_dias: int = 252
+
+
+class ComparacaoDetalhes(BaseModel):
+    ticker: str
+    nome: str
+    retorno_total: float
+    retorno_anualizado: float
+    volatilidade: float
+    sharpe_ratio: float
+    max_drawdown: float
+    dividend_yield: float
+
+
+class ComparacaoAtivosResponse(BaseModel):
+    comparacao: List[ComparacaoDetalhes]
+    detalhes: Dict[str, AnaliseAtivoResponse]
+
+# Schema para a análise de carteira
+
+
+class AnaliseCarteiraResponse(BaseModel):
+    carteira_id: int
+    resumo: Dict
+    ativos: List[Dict]
+    diversificacao_setorial: Dict
+
+# Schema para as métricas do mercado
+
+
+class MetricasMercadoResponse(BaseModel):
+    total_ativos: int
+    distribuicao_tipos: Dict
+    distribuicao_setores: Dict
+    ativos_recentes: List[Dict]
+
+# --- Schemas para Respostas da API (gerais) ---
+
+
 class ResponseMessage(BaseModel):
     message: str
     success: bool = True
 
-class AtivoComCotacao(Ativo):
+
+class AtivoComCotacao(AtivoBase):
+    id: int
     ultima_cotacao: Optional[Cotacao] = None
     dividendos_recentes: List[Dividendo] = []
 
-class CarteiraDetalhada(Carteira):
-    ativos: List[CarteiraAtivo] = []
-    total_investido: float = 0.0
-    total_atual: float = 0.0
-    rentabilidade: float = 0.0
-    rentabilidade_percentual: float = 0.0
+    class Config:
+        from_attributes = True
 
 # Schemas para busca de dados externos
+
+
 class BuscaAtivoRequest(BaseModel):
     tickers: List[str] = Field(..., description="Lista de tickers para buscar")
-    incluir_historico: bool = Field(default=False, description="Incluir dados históricos")
-    incluir_dividendos: bool = Field(default=False, description="Incluir dados de dividendos")
-    range_historico: Optional[str] = Field(default="1mo", description="Período para dados históricos")
+    incluir_historico: bool = Field(
+        default=False, description="Incluir dados históricos")
+    incluir_dividendos: bool = Field(
+        default=False, description="Incluir dados de dividendos")
+    range_historico: Optional[str] = Field(
+        default="1mo", description="Período para dados históricos")
+
 
 class AtualizacaoPrecos(BaseModel):
     tickers_atualizados: List[str]
@@ -224,3 +347,7 @@ class AtualizacaoPrecos(BaseModel):
     sucesso: bool
     mensagem: str
 
+
+# Importação da frente para a declaração, para resolver problemas de importação circular
+# no Pydantic quando há modelos que referenciam uns aos outros
+CarteiraAtivo.model_rebuild()

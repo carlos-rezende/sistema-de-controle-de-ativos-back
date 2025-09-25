@@ -1,0 +1,29 @@
+Arquivos e pastas do Python
+pycache/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+
+Arquivos e pastas do Node.js
+/node_modules
+dist/
+
+Arquivos de log e cache
+*.log
+*.sqlite3
+
+Arquivos de variáveis de ambiente
+.env
+.env.local
+.env.production
+.env.development
+
+Arquivos do sistema operacional
+.DS_Store
+Thumbs.db
+
+Arquivos de IDEs
+.vscode/
+.idea/

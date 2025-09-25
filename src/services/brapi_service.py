@@ -6,223 +6,118 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 class BrapiService:
     """Serviço para integração com a API brapi.dev"""
-    
+
     def __init__(self):
         self.base_url = os.getenv("BRAPI_BASE_URL", "https://brapi.dev/api")
         self.token = os.getenv("BRAPI_TOKEN", "")
         self.headers = {}
-        
-        if self.token:
-            self.headers["Authorization"] = f"Bearer {self.token}"
-    
-    def _make_request(self, endpoint: str, params: Dict = None) -> Dict:
-        """Faz uma requisição para a API brapi.dev"""
+
+    def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+        """
+        Faz uma requisição para a API brapi.dev de forma centralizada.
+        Agora, a lógica do token é tratada aqui, evitando repetição.
+        """
         url = f"{self.base_url}/{endpoint}"
-        
+
+        if params is None:
+            params = {}
+
+        if self.token:
+            params["token"] = self.token
+
         try:
-            response = requests.get(url, headers=self.headers, params=params)
+            response = requests.get(url, params=params)
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.HTTPError as e:
+            print(f"Erro HTTP na requisição para {url}: {e}")
+            print(
+                f"URL: {response.url}, Status: {response.status_code}, Resposta: {response.text}")
+            return None
         except requests.exceptions.RequestException as e:
             print(f"Erro na requisição para {url}: {e}")
-            return {"error": str(e)}
-    
-    def get_quote(self, tickers: List[str], **kwargs) -> Dict:
+            return None
+
+    def get_quote(self, tickers: List[str], **kwargs) -> Optional[Dict]:
         """
-        Busca cotações de ativos
-        
-        Args:
-            tickers: Lista de tickers para buscar
-            **kwargs: Parâmetros adicionais (range, interval, fundamental, dividends, modules)
-        
-        Returns:
-            Dados das cotações
+        Busca cotações de ativos.
         """
         tickers_str = ",".join(tickers)
         endpoint = f"quote/{tickers_str}"
-        
-        params = {}
-        if self.token:
-            params["token"] = self.token
-            
-        # Adiciona parâmetros opcionais
-        for key, value in kwargs.items():
-            if value is not None:
-                params[key] = value
-        
-        return self._make_request(endpoint, params)
-    
-    def get_quote_list(self, **kwargs) -> Dict:
+        return self._make_request(endpoint, params=kwargs)
+
+    def get_quote_list(self, **kwargs) -> Optional[Dict]:
         """
-        Busca lista de todas as ações disponíveis
-        
-        Args:
-            **kwargs: Parâmetros adicionais
-        
-        Returns:
-            Lista de ações
+        Busca lista de todas as ações disponíveis.
         """
         endpoint = "quote/list"
-        
-        params = {}
-        if self.token:
-            params["token"] = self.token
-            
-        for key, value in kwargs.items():
-            if value is not None:
-                params[key] = value
-        
-        return self._make_request(endpoint, params)
-    
-    def get_historical_data(self, ticker: str, range_period: str = "1mo", 
-                          interval: str = "1d") -> Dict:
+        return self._make_request(endpoint, params=kwargs)
+
+    # ✅ CORREÇÃO: O método get_historical_data agora chama get_quote
+    def get_historical_data(self, ticker: str, range_period: str = "1mo", interval: str = "1d") -> Optional[Dict]:
         """
-        Busca dados históricos de um ativo
-        
-        Args:
-            ticker: Ticker do ativo
-            range_period: Período dos dados (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)
-            interval: Intervalo dos dados (1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo)
-        
-        Returns:
-            Dados históricos
+        Busca dados históricos de um ativo usando get_quote.
         """
-        params = {
-            "range": range_period,
-            "interval": interval
-        }
-        
-        if self.token:
-            params["token"] = self.token
-        
-        return self.get_quote([ticker], **params)
-    
-    def get_dividends(self, ticker: str) -> Dict:
+        return self.get_quote([ticker], range=range_period, interval=interval)
+
+    def get_dividends(self, ticker: str) -> Optional[Dict]:
         """
-        Busca dados de dividendos de um ativo
-        
-        Args:
-            ticker: Ticker do ativo
-        
-        Returns:
-            Dados de dividendos
+        Busca dados de dividendos de um ativo.
         """
         params = {"dividends": "true"}
-        
-        if self.token:
-            params["token"] = self.token
-        
         return self.get_quote([ticker], **params)
-    
-    def get_fundamental_data(self, ticker: str, modules: List[str] = None) -> Dict:
+
+    def get_fundamental_data(self, ticker: str, modules: Optional[List[str]] = None) -> Optional[Dict]:
         """
-        Busca dados fundamentalistas de um ativo
-        
-        Args:
-            ticker: Ticker do ativo
-            modules: Lista de módulos a serem incluídos
-        
-        Returns:
-            Dados fundamentalistas
+        Busca dados fundamentalistas de um ativo.
         """
         params = {"fundamental": "true"}
-        
         if modules:
             params["modules"] = ",".join(modules)
-        
-        if self.token:
-            params["token"] = self.token
-        
         return self.get_quote([ticker], **params)
-    
-    def get_crypto_quote(self, coins: List[str]) -> Dict:
+
+    def get_crypto_quote(self, coins: List[str]) -> Optional[Dict]:
         """
-        Busca cotações de criptomoedas
-        
-        Args:
-            coins: Lista de símbolos de criptomoedas
-        
-        Returns:
-            Cotações de criptomoedas
+        Busca cotações de criptomoedas.
         """
         coins_str = ",".join(coins)
         endpoint = f"crypto/{coins_str}"
-        
-        params = {}
-        if self.token:
-            params["token"] = self.token
-        
-        return self._make_request(endpoint, params)
-    
-    def get_currency_quote(self, currencies: List[str]) -> Dict:
+        return self._make_request(endpoint)
+
+    def get_currency_quote(self, currencies: List[str]) -> Optional[Dict]:
         """
-        Busca cotações de moedas
-        
-        Args:
-            currencies: Lista de códigos de moedas
-        
-        Returns:
-            Cotações de moedas
+        Busca cotações de moedas.
         """
         currencies_str = ",".join(currencies)
         endpoint = f"currency/{currencies_str}"
-        
-        params = {}
-        if self.token:
-            params["token"] = self.token
-        
-        return self._make_request(endpoint, params)
-    
-    def get_inflation(self, country: str = "BR") -> Dict:
+        return self._make_request(endpoint)
+
+    def get_inflation(self, country: str = "BR") -> Optional[Dict]:
         """
-        Busca dados de inflação
-        
-        Args:
-            country: Código do país (padrão: BR)
-        
-        Returns:
-            Dados de inflação
+        Busca dados de inflação.
         """
         endpoint = f"inflation/{country}"
-        
-        params = {}
-        if self.token:
-            params["token"] = self.token
-        
-        return self._make_request(endpoint, params)
-    
-    def get_selic_rate(self) -> Dict:
+        return self._make_request(endpoint)
+
+    def get_selic_rate(self) -> Optional[Dict]:
         """
-        Busca taxa SELIC
-        
-        Returns:
-            Dados da taxa SELIC
+        Busca taxa SELIC.
         """
         endpoint = "selic"
-        
-        params = {}
-        if self.token:
-            params["token"] = self.token
-        
-        return self._make_request(endpoint, params)
-    
-    def parse_quote_data(self, data: Dict) -> List[Dict]:
+        return self._make_request(endpoint)
+
+    def parse_quote_data(self, data: Optional[Dict]) -> List[Dict]:
         """
-        Processa dados de cotação da API brapi.dev
-        
-        Args:
-            data: Dados retornados pela API
-        
-        Returns:
-            Lista de dados processados
+        Processa dados de cotação da API brapi.dev.
         """
-        if "results" not in data:
+        if not data or "results" not in data:
             return []
-        
+
         processed_data = []
-        
+
         for result in data["results"]:
             processed_item = {
                 "ticker": result.get("symbol", ""),
@@ -240,38 +135,37 @@ class BrapiService:
                 "logo_url": result.get("logourl", ""),
                 "data_hora": datetime.now()
             }
-            
-            # Processa dados históricos se disponíveis
-            if "historicalDataPrice" in result:
-                historical_data = []
-                for hist in result["historicalDataPrice"]:
-                    historical_data.append({
+
+            historical_data = result.get("historicalDataPrice")
+            if historical_data:
+                processed_item["historico"] = [
+                    {
                         "data": datetime.fromtimestamp(hist.get("date", 0)),
                         "abertura": hist.get("open", 0.0),
                         "maximo": hist.get("high", 0.0),
                         "minimo": hist.get("low", 0.0),
                         "fechamento": hist.get("close", 0.0),
                         "volume": hist.get("volume", 0)
-                    })
-                processed_item["historico"] = historical_data
-            
-            # Processa dados de dividendos se disponíveis
-            if "dividendsData" in result:
-                dividends_data = []
-                for div in result["dividendsData"]["cashDividends"]:
-                    dividends_data.append({
+                    } for hist in historical_data
+                ]
+
+            dividends_data = result.get(
+                "dividendsData", {}).get("cashDividends")
+            if dividends_data:
+                processed_item["dividendos"] = [
+                    {
                         "tipo": "DIVIDENDO",
                         "valor": div.get("rate", 0.0),
-                        "data_com": datetime.strptime(div.get("date", ""), "%Y-%m-%d") if div.get("date") else None,
-                        "data_ex": datetime.strptime(div.get("exDate", ""), "%Y-%m-%d") if div.get("exDate") else None,
-                        "data_pagamento": datetime.strptime(div.get("paymentDate", ""), "%Y-%m-%d") if div.get("paymentDate") else None
-                    })
-                processed_item["dividendos"] = dividends_data
-            
+                        "data_com": datetime.strptime(div["date"], "%Y-%m-%d") if "date" in div else None,
+                        "data_ex": datetime.strptime(div["exDate"], "%Y-%m-%d") if "exDate" in div else None,
+                        "data_pagamento": datetime.strptime(div["paymentDate"], "%Y-%m-%d") if "paymentDate" in div else None
+                    } for div in dividends_data
+                ]
+
             processed_data.append(processed_item)
-        
+
         return processed_data
+
 
 # Instância global do serviço
 brapi_service = BrapiService()
-

@@ -1,389 +1,318 @@
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-import io
-import base64
 
-from models import Ativo, Cotacao, Dividendo, CarteiraAtivo
-import crud
+from src.models import Ativo, CarteiraAtivo
+from src import crud
+from src.services.brapi_service import BrapiService
+
 
 class AnalyticsService:
     """Serviço para análise de dados financeiros"""
-    
-    def __init__(self):
-        # Configurações de estilo para gráficos
+
+    def __init__(self, db: Session):
+        self.db = db
+        # BrapiService deve aceitar token no __init__
+        self.brapi_service = BrapiService()
         plt.style.use('seaborn-v0_8')
         sns.set_palette("husl")
-    
+
+    # ===========================
+    # ===== MÉTRICAS BÁSICAS ====
+    # ===========================
     def calcular_retorno_simples(self, preco_inicial: float, preco_final: float) -> float:
-        """Calcula o retorno simples entre dois preços"""
         if preco_inicial == 0:
             return 0.0
         return (preco_final - preco_inicial) / preco_inicial
-    
+
     def calcular_retorno_composto(self, precos: List[float]) -> List[float]:
-        """Calcula os retornos compostos de uma série de preços"""
         if len(precos) < 2:
             return []
-        
-        retornos = []
-        for i in range(1, len(precos)):
-            if precos[i-1] != 0:
-                retorno = (precos[i] / precos[i-1]) - 1
-                retornos.append(retorno)
-            else:
-                retornos.append(0.0)
-        
-        return retornos
-    
+        return (np.array(precos[1:]) / np.array(precos[:-1]) - 1).tolist()
+
     def calcular_volatilidade(self, retornos: List[float], anualizar: bool = True) -> float:
-        """Calcula a volatilidade (desvio padrão dos retornos)"""
         if len(retornos) < 2:
             return 0.0
-        
-        volatilidade = np.std(retornos, ddof=1)
-        
-        if anualizar:
-            # Assumindo dados diários, multiplica por sqrt(252) para anualizar
-            volatilidade *= np.sqrt(252)
-        
-        return volatilidade
-    
-    def calcular_sharpe_ratio(self, retornos: List[float], taxa_livre_risco: float = 0.1) -> float:
-        """Calcula o índice Sharpe"""
+        vol = np.std(retornos, ddof=1)
+        return vol * np.sqrt(252) if anualizar else vol
+
+    def calcular_sharpe_ratio(self, retornos: List[float], taxa_livre_risco: float = 0.05) -> float:
         if len(retornos) < 2:
             return 0.0
-        
-        retorno_medio = np.mean(retornos) * 252  # Anualizado
-        volatilidade = self.calcular_volatilidade(retornos, anualizar=True)
-        
-        if volatilidade == 0:
-            return 0.0
-        
-        return (retorno_medio - taxa_livre_risco) / volatilidade
-    
+        media = np.mean(retornos) * 252
+        vol = self.calcular_volatilidade(retornos, anualizar=True)
+        return (media - taxa_livre_risco) / vol if vol > 0 else 0.0
+
     def calcular_drawdown(self, precos: List[float]) -> Tuple[List[float], float]:
-        """Calcula o drawdown de uma série de preços"""
         if len(precos) < 2:
             return [], 0.0
-        
-        # Calcula o valor acumulado
-        valores_acumulados = np.array(precos)
-        
-        # Calcula o pico histórico
-        picos = np.maximum.accumulate(valores_acumulados)
-        
-        # Calcula o drawdown
-        drawdowns = (valores_acumulados - picos) / picos
-        
-        # Máximo drawdown
-        max_drawdown = np.min(drawdowns)
-        
-        return drawdowns.tolist(), max_drawdown
-    
-    def analisar_ativo(self, db: Session, ticker: str, periodo_dias: int = 252) -> Dict:
-        """Análise completa de um ativo"""
-        ativo = crud.get_ativo_by_ticker(db, ticker)
+        serie = pd.Series(precos)
+        pico = serie.cummax()
+        dd = (serie - pico) / pico
+        return dd.tolist(), dd.min()
+
+    # ===========================
+    # ===== BUSCA DE DADOS ======
+    # ===========================
+    def _get_dataframe(self, ticker: str, periodo_dias: int) -> Optional[pd.DataFrame]:
+        """
+        Busca cotações na BRAPI e cria um DataFrame,
+        respeitando os limites do plano gratuito (1d, 5d, 1mo, 3mo).
+        """
+        # Escolha do range permitido
+        if periodo_dias >= 252:       # ~1 ano
+            print("⚠️ Plano gratuito não suporta 1y. Usando 3mo.")
+            range_param = '3mo'
+        elif periodo_dias >= 90:
+            range_param = '3mo'
+        elif periodo_dias >= 30:
+            range_param = '1mo'
+        elif periodo_dias >= 5:
+            range_param = '5d'
+        else:
+            range_param = '1d'
+
+        try:
+            # 🔑 Somente parâmetros permitidos no plano gratuito
+            cotacoes_data = self.brapi_service.get_historical_data(
+                ticker,
+                range_period=range_param,
+                interval='1d'
+            )
+        except Exception as e:
+            print(f"⚠️ Erro na requisição BRAPI: {e}")
+            return None
+
+        # A resposta vem em results[0]['historicalDataPrice']
+        if not cotacoes_data or "results" not in cotacoes_data:
+            print("⚠️ Dados inválidos ou limite da API atingido.")
+            return None
+
+        results = cotacoes_data["results"]
+        if not results or "historicalDataPrice" not in results[0]:
+            print("⚠️ Histórico não disponível para este ticker.")
+            return None
+
+        df = pd.DataFrame(results[0]["historicalDataPrice"])
+        if df.empty:
+            return None
+
+        df['data'] = pd.to_datetime(df['date'], unit='s', errors='coerce')
+        df = df.rename(
+            columns={'close': 'preco_fechamento', 'volume': 'volume'})
+        df = df.dropna(subset=['data', 'preco_fechamento'])
+        return df.sort_values('data').set_index('data')
+
+    # ===========================
+    # ===== ANÁLISE DE ATIVO ====
+    # ===========================
+    def analisar_ativo(self, ticker: str, periodo_dias: int = 252) -> Dict:
+        ativo = crud.get_ativo_by_ticker(self.db, ticker)
         if not ativo:
             return {"error": "Ativo não encontrado"}
-        
-        # Busca cotações do período
-        data_inicio = datetime.now() - timedelta(days=periodo_dias)
-        cotacoes = crud.get_cotacoes_periodo(db, ativo.id, data_inicio, datetime.now())
-        
-        if len(cotacoes) < 2:
-            return {"error": "Dados insuficientes para análise"}
-        
-        # Organiza os dados
-        df = pd.DataFrame([{
-            'data': c.data_hora,
-            'preco': c.preco_fechamento,
-            'volume': c.volume or 0
-        } for c in cotacoes])
-        
-        df = df.sort_values('data')
-        precos = df['preco'].tolist()
-        
-        # Cálculos de performance
+
+        df = self._get_dataframe(ticker, periodo_dias)
+        if df is None:
+            return {"error": "Dados insuficientes para análise ou limite do plano atingido."}
+
+        precos = df['preco_fechamento'].tolist()
         retornos = self.calcular_retorno_composto(precos)
         retorno_total = self.calcular_retorno_simples(precos[0], precos[-1])
-        retorno_anualizado = (1 + retorno_total) ** (252 / len(precos)) - 1
+        retorno_anual = (1 + retorno_total) ** (252 / len(precos)) - 1
         volatilidade = self.calcular_volatilidade(retornos)
         sharpe = self.calcular_sharpe_ratio(retornos)
         drawdowns, max_drawdown = self.calcular_drawdown(precos)
-        
-        # Busca dividendos do período
-        dividendos = crud.get_dividendos_periodo(db, ativo.id, data_inicio, datetime.now())
-        dividend_yield = sum(d.valor for d in dividendos) / precos[-1] if precos[-1] > 0 else 0
-        
-        # Estatísticas básicas
-        preco_atual = precos[-1]
-        preco_minimo = min(precos)
-        preco_maximo = max(precos)
-        volume_medio = df['volume'].mean()
-        
+
         return {
             "ticker": ticker,
             "nome": ativo.nome_curto,
             "periodo_analise": periodo_dias,
             "performance": {
-                "preco_atual": preco_atual,
-                "preco_minimo": preco_minimo,
-                "preco_maximo": preco_maximo,
+                "preco_atual": precos[-1],
+                "preco_minimo": df['preco_fechamento'].min(),
+                "preco_maximo": df['preco_fechamento'].max(),
                 "retorno_total": retorno_total,
-                "retorno_anualizado": retorno_anualizado,
+                "retorno_anualizado": retorno_anual,
                 "volatilidade": volatilidade,
                 "sharpe_ratio": sharpe,
-                "max_drawdown": max_drawdown,
-                "dividend_yield": dividend_yield
+                "max_drawdown": max_drawdown
             },
             "estatisticas": {
                 "numero_observacoes": len(precos),
-                "volume_medio": volume_medio,
-                "numero_dividendos": len(dividendos)
+                "volume_medio": df['volume'].mean()
             }
         }
-    
-    def comparar_ativos(self, db: Session, tickers: List[str], periodo_dias: int = 252) -> Dict:
-        """Compara múltiplos ativos"""
-        resultados = {}
-        
-        for ticker in tickers:
-            analise = self.analisar_ativo(db, ticker, periodo_dias)
-            if "error" not in analise:
-                resultados[ticker] = analise
-        
-        if not resultados:
-            return {"error": "Nenhum ativo válido para comparação"}
-        
-        # Cria tabela comparativa
-        comparacao = []
-        for ticker, dados in resultados.items():
-            perf = dados["performance"]
-            comparacao.append({
-                "ticker": ticker,
-                "nome": dados["nome"],
-                "retorno_total": perf["retorno_total"],
-                "retorno_anualizado": perf["retorno_anualizado"],
-                "volatilidade": perf["volatilidade"],
-                "sharpe_ratio": perf["sharpe_ratio"],
-                "max_drawdown": perf["max_drawdown"],
-                "dividend_yield": perf["dividend_yield"]
-            })
-        
-        # Ordena por Sharpe ratio
-        comparacao.sort(key=lambda x: x["sharpe_ratio"], reverse=True)
-        
-        return {
-            "comparacao": comparacao,
-            "detalhes": resultados
-        }
-    
-    def analisar_carteira(self, db: Session, carteira_id: int) -> Dict:
-        """Análise de uma carteira de investimentos"""
-        carteira_ativos = crud.get_carteira_ativos(db, carteira_id)
-        
+
+    # ===========================
+    # ===== COMPARAR ATIVOS =====
+    # ===========================
+    def comparar_ativos(self, tickers: List[str], periodo_dias: int = 252) -> Dict:
+        resultados = {t: self.analisar_ativo(t, periodo_dias) for t in tickers}
+        validos = {k: v for k, v in resultados.items() if "error" not in v}
+        if not validos:
+            return {"error": "Nenhum ativo válido para comparação."}
+
+        comparacao = [
+            {"ticker": t, "nome": d["nome"], **d["performance"]}
+            for t, d in validos.items()
+        ]
+        comparacao.sort(key=lambda x: x.get("sharpe_ratio", -1), reverse=True)
+        return {"comparacao": comparacao, "detalhes": validos}
+
+    # ===========================
+    # ===== ANÁLISE CARTEIRA ====
+    # ===========================
+    def analisar_carteira(self, carteira_id: int) -> Dict:
+        carteira_ativos = crud.get_carteira_ativos(self.db, carteira_id)
         if not carteira_ativos:
             return {"error": "Carteira vazia ou não encontrada"}
-        
-        # Atualiza valores da carteira
-        crud.atualizar_valor_carteira(db, carteira_id)
-        crud.calcular_percentual_carteira(db, carteira_id)
-        
-        # Recarrega os dados atualizados
-        carteira_ativos = crud.get_carteira_ativos(db, carteira_id)
-        
-        # Análise por ativo
-        analise_ativos = []
-        valor_total_carteira = 0
-        
+
+        ativos_data, total_atual, total_invest = [], 0, 0
         for ca in carteira_ativos:
-            ativo = ca.ativo
-            valor_atual = ca.valor_atual or 0
-            valor_investido = ca.valor_investido
-            rentabilidade = valor_atual - valor_investido
-            rentabilidade_pct = (rentabilidade / valor_investido * 100) if valor_investido > 0 else 0
-            
-            analise_ativos.append({
-                "ticker": ativo.ticker,
-                "nome": ativo.nome_curto,
+            investido = ca.valor_investido
+            atual = ca.valor_atual or 0
+            rentab = atual - investido
+            pct = rentab / investido * 100 if investido > 0 else 0
+            ativos_data.append({
+                "ticker": ca.ativo.ticker,
+                "nome": ca.ativo.nome_curto,
                 "quantidade": ca.quantidade,
                 "preco_medio": ca.preco_medio,
-                "valor_investido": valor_investido,
-                "valor_atual": valor_atual,
-                "rentabilidade": rentabilidade,
-                "rentabilidade_percentual": rentabilidade_pct,
+                "valor_investido": investido,
+                "valor_atual": atual,
+                "rentabilidade": rentab,
+                "rentabilidade_percentual": pct,
                 "percentual_carteira": ca.percentual_carteira or 0
             })
-            
-            valor_total_carteira += valor_atual
-        
-        # Métricas da carteira
-        total_investido = sum(a["valor_investido"] for a in analise_ativos)
-        rentabilidade_total = valor_total_carteira - total_investido
-        rentabilidade_total_pct = (rentabilidade_total / total_investido * 100) if total_investido > 0 else 0
-        
-        # Diversificação
-        concentracao_maxima = max(a["percentual_carteira"] for a in analise_ativos) if analise_ativos else 0
-        numero_ativos = len(analise_ativos)
-        
-        # Análise por setor (se disponível)
-        setores = {}
+            total_atual += atual
+            total_invest += investido
+
+        rentab_total = total_atual - total_invest
+        rentab_pct = rentab_total / total_invest * 100 if total_invest > 0 else 0
+
+        setores: Dict[str, Dict[str, float]] = {}
         for ca in carteira_ativos:
             setor = ca.ativo.setor or "Não classificado"
-            if setor not in setores:
-                setores[setor] = {"valor": 0, "percentual": 0}
+            setores.setdefault(setor, {"valor": 0})
             setores[setor]["valor"] += ca.valor_atual or 0
-        
-        for setor in setores:
-            setores[setor]["percentual"] = (setores[setor]["valor"] / valor_total_carteira * 100) if valor_total_carteira > 0 else 0
-        
+        for s in setores:
+            setores[s]["percentual"] = (
+                setores[s]["valor"] / total_atual * 100
+            ) if total_atual > 0 else 0
+
         return {
             "carteira_id": carteira_id,
             "resumo": {
-                "valor_total": valor_total_carteira,
-                "total_investido": total_investido,
-                "rentabilidade_total": rentabilidade_total,
-                "rentabilidade_percentual": rentabilidade_total_pct,
-                "numero_ativos": numero_ativos,
-                "concentracao_maxima": concentracao_maxima
+                "valor_total": total_atual,
+                "total_investido": total_invest,
+                "rentabilidade_total": rentab_total,
+                "rentabilidade_percentual": rentab_pct,
+                "numero_ativos": len(ativos_data),
+                "concentracao_maxima": max((a["percentual_carteira"] for a in ativos_data), default=0)
             },
-            "ativos": analise_ativos,
+            "ativos": ativos_data,
             "diversificacao_setorial": setores
         }
-    
-    def gerar_grafico_performance(self, db: Session, ticker: str, periodo_dias: int = 252) -> str:
-        """Gera gráfico de performance de um ativo"""
-        ativo = crud.get_ativo_by_ticker(db, ticker)
+
+    # ===========================
+    # ===== GRÁFICOS ============
+    # ===========================
+    def gerar_grafico_performance(self, ticker: str, periodo_dias: int = 252) -> Optional[str]:
+        ativo = crud.get_ativo_by_ticker(self.db, ticker)
         if not ativo:
-            return ""
-        
-        # Busca dados
-        data_inicio = datetime.now() - timedelta(days=periodo_dias)
-        cotacoes = crud.get_cotacoes_periodo(db, ativo.id, data_inicio, datetime.now())
-        
-        if len(cotacoes) < 2:
-            return ""
-        
-        # Prepara dados
-        df = pd.DataFrame([{
-            'data': c.data_hora,
-            'preco': c.preco_fechamento,
-            'volume': c.volume or 0
-        } for c in cotacoes])
-        
-        df = df.sort_values('data')
-        
-        # Cria gráfico com Plotly
+            return None
+        df = self._get_dataframe(ticker, periodo_dias)
+        if df is None:
+            return None
+
         fig = make_subplots(
             rows=2, cols=1,
             subplot_titles=(f'Preço - {ticker}', 'Volume'),
-            vertical_spacing=0.1,
-            row_heights=[0.7, 0.3]
+            vertical_spacing=0.1, row_heights=[0.7, 0.3]
         )
-        
-        # Gráfico de preço
-        fig.add_trace(
-            go.Scatter(
-                x=df['data'],
-                y=df['preco'],
-                mode='lines',
-                name='Preço',
-                line=dict(color='blue', width=2)
-            ),
-            row=1, col=1
-        )
-        
-        # Gráfico de volume
-        fig.add_trace(
-            go.Bar(
-                x=df['data'],
-                y=df['volume'],
-                name='Volume',
-                marker_color='lightblue'
-            ),
-            row=2, col=1
-        )
-        
-        # Layout
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['preco_fechamento'], mode='lines',
+            name='Preço', line=dict(color='blue', width=2)
+        ), row=1, col=1)
+        fig.add_trace(go.Bar(
+            x=df.index, y=df['volume'], name='Volume',
+            marker_color='lightblue'
+        ), row=2, col=1)
         fig.update_layout(
-            title=f'Análise de Performance - {ativo.nome_curto}',
-            xaxis_title='Data',
-            height=600,
-            showlegend=True
+            title_text=f'Análise de Performance - {ativo.nome_curto}',
+            xaxis_rangeslider_visible=False,
+            xaxis2_rangeslider_visible=False,
+            height=600, showlegend=True
         )
-        
-        fig.update_yaxes(title_text="Preço (R$)", row=1, col=1)
-        fig.update_yaxes(title_text="Volume", row=2, col=1)
-        
-        # Converte para HTML
-        return fig.to_html(include_plotlyjs='cdn')
-    
-    def gerar_relatorio_carteira(self, db: Session, carteira_id: int) -> Dict:
-        """Gera relatório completo da carteira"""
-        analise = self.analisar_carteira(db, carteira_id)
-        
+        return fig.to_html(full_html=False, include_plotlyjs='cdn')
+
+    def gerar_relatorio_carteira(self, carteira_id: int) -> Dict:
+        analise = self.analisar_carteira(carteira_id)
         if "error" in analise:
             return analise
-        
-        # Gera gráfico de distribuição
+
         ativos_data = analise["ativos"]
-        
-        # Gráfico de pizza - Distribuição por ativo
-        fig_pizza = go.Figure(data=[go.Pie(
-            labels=[a["ticker"] for a in ativos_data],
-            values=[a["percentual_carteira"] for a in ativos_data],
-            hole=0.3
-        )])
-        
-        fig_pizza.update_layout(
-            title="Distribuição da Carteira por Ativo",
-            annotations=[dict(text='Carteira', x=0.5, y=0.5, font_size=20, showarrow=False)]
-        )
-        
-        # Gráfico de barras - Rentabilidade por ativo
-        fig_barras = go.Figure(data=[
-            go.Bar(
+        setores_data = analise["diversificacao_setorial"]
+        graficos = {}
+
+        if ativos_data:
+            fig_pizza = px.pie(
+                values=[a["percentual_carteira"] for a in ativos_data],
+                names=[a["ticker"] for a in ativos_data],
+                title="Distribuição da Carteira por Ativo", hole=0.3
+            )
+            graficos["distribuicao_ativos"] = fig_pizza.to_html(
+                full_html=False, include_plotlyjs='cdn')
+
+            fig_barras = px.bar(
                 x=[a["ticker"] for a in ativos_data],
                 y=[a["rentabilidade_percentual"] for a in ativos_data],
-                marker_color=['green' if x >= 0 else 'red' for x in [a["rentabilidade_percentual"] for a in ativos_data]]
+                color=[a["rentabilidade_percentual"]
+                       >= 0 for a in ativos_data],
+                color_discrete_map={True: 'green', False: 'red'},
+                title="Rentabilidade por Ativo (%)",
+                labels={'x': 'Ativo', 'y': 'Rentabilidade (%)'}
             )
-        ])
-        
-        fig_barras.update_layout(
-            title="Rentabilidade por Ativo (%)",
-            xaxis_title="Ativo",
-            yaxis_title="Rentabilidade (%)"
-        )
-        
-        # Gráfico de setores se houver dados
-        setores_data = analise["diversificacao_setorial"]
-        fig_setores = None
-        
+            fig_barras.update_layout(showlegend=False)
+            graficos["rentabilidade_ativos"] = fig_barras.to_html(
+                full_html=False, include_plotlyjs='cdn')
+
         if len(setores_data) > 1:
-            fig_setores = go.Figure(data=[go.Pie(
-                labels=list(setores_data.keys()),
-                values=[s["percentual"] for s in setores_data.values()]
-            )])
-            
-            fig_setores.update_layout(title="Diversificação por Setor")
-        
+            fig_setores = px.pie(
+                values=[s["percentual"] for s in setores_data.values()],
+                names=list(setores_data.keys()),
+                title="Diversificação por Setor"
+            )
+            graficos["distribuicao_setores"] = fig_setores.to_html(
+                full_html=False, include_plotlyjs='cdn')
+
+        return {"analise": analise, "graficos": graficos}
+
+    # ===========================
+    # ===== MÉTRICAS GERAIS =====
+    # ===========================
+    def analisar_metricas_mercado(self) -> Dict:
+        ativos = crud.get_ativos(self.db, limit=1000)
+        tipos, setores = {}, {}
+
+        for a in ativos:
+            tipos[a.tipo] = tipos.get(a.tipo, 0) + 1
+            setor = a.setor or "Não classificado"
+            setores[setor] = setores.get(setor, 0) + 1
+
         return {
-            "analise": analise,
-            "graficos": {
-                "distribuicao_ativos": fig_pizza.to_html(include_plotlyjs='cdn'),
-                "rentabilidade_ativos": fig_barras.to_html(include_plotlyjs='cdn'),
-                "distribuicao_setores": fig_setores.to_html(include_plotlyjs='cdn') if fig_setores else None
-            }
+            "total_ativos": len(ativos),
+            "distribuicao_tipos": tipos,
+            "distribuicao_setores": setores,
+            "ativos_recentes": [
+                {"ticker": a.ticker, "nome": a.nome_curto,
+                 "tipo": a.tipo, "setor": a.setor}
+                for a in ativos[:10]
+            ]
         }
-
-# Instância global do serviço
-analytics_service = AnalyticsService()
-
